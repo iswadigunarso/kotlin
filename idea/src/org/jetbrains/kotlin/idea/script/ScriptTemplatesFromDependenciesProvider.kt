@@ -6,23 +6,23 @@
 package org.jetbrains.kotlin.idea.script
 
 import com.intellij.ProjectTopics
-import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.*
 import com.intellij.openapi.vfs.*
+import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.intellij.util.indexing.FileBasedIndex
+import org.jetbrains.annotations.TestOnly
 import org.jetbrains.kotlin.idea.core.script.ScriptDefinitionSourceAsContributor
 import org.jetbrains.kotlin.idea.core.script.ScriptDefinitionsManager
 import org.jetbrains.kotlin.idea.core.script.loadDefinitionsFromTemplates
 import org.jetbrains.kotlin.scripting.definitions.SCRIPT_DEFINITION_MARKERS_EXTENSION_WITH_DOT
-import org.jetbrains.kotlin.scripting.definitions.SCRIPT_DEFINITION_MARKERS_PATH
 import org.jetbrains.kotlin.scripting.definitions.ScriptDefinition
 import org.jetbrains.kotlin.scripting.definitions.getEnvironment
+import org.jetbrains.kotlin.utils.keysToMap
 import java.io.File
-import java.net.URL
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import kotlin.script.experimental.host.ScriptingHostConfiguration
@@ -94,8 +94,14 @@ class ScriptTemplatesFromDependenciesProvider(private val project: Project) : Sc
     @Volatile
     private var forceStartUpdate = false
 
+    @TestOnly
+    fun forceReload() {
+        forceStartUpdate = true
+        asyncRunUpdateScriptTemplates()
+    }
+
     private fun loadScriptDefinitions() {
-        if (ApplicationManager.getApplication().isUnitTestMode || project.isDefault) {
+        if (project.isDefault) {
             return onEarlyEnd()
         }
 
@@ -108,53 +114,19 @@ class ScriptTemplatesFromDependenciesProvider(private val project: Project) : Sc
 
         ReadAction
             .nonBlocking<List<VirtualFile>> {
-                val fileManager = VirtualFileManager.getInstance()
-                FileBasedIndex.getInstance().getAllKeys(ScriptTemplatesClassRootsIndex.KEY, project).mapNotNull {
-                    val vFile = fileManager.findFileByUrl(it)
-
-                    // see SCRIPT_DEFINITION_MARKERS_PATH
-                    vFile?.parent?.parent?.parent?.parent
-                }
+                FileBasedIndex.getInstance().getContainingFiles(
+                    ScriptTemplatesClassRootsIndex.KEY,
+                    ScriptTemplatesClassRootsIndex.VALUE,
+                    GlobalSearchScope.allScope(project)
+                ).filterNotNull()
             }
             .inSmartMode(project)
             .expireWith(project)
             .submit(AppExecutorUtil.getAppExecutorService())
-            .onSuccess { roots ->
-                roots.forEach { root ->
-                    if (logger.isDebugEnabled) {
-                        logger.debug("root matching SCRIPT_DEFINITION_MARKERS_PATH found: ${root.path}")
-                    }
-
-                    val orderEntriesForFile = ProjectFileIndex.getInstance(project).getOrderEntriesForFile(root)
-                        .filter {
-                            if (it is ModuleSourceOrderEntry) {
-                                !ModuleRootManager.getInstance(it.ownerModule).fileIndex.isInTestSourceContent(root)
-                            } else {
-                                it is LibraryOrSdkOrderEntry
-                            }
-                        }
-                        .takeIf { it.isNotEmpty() } ?: return@forEach
-
-                    root.findFileByRelativePath(SCRIPT_DEFINITION_MARKERS_PATH)?.children?.forEach { resourceFile ->
-                        if (resourceFile.isValid && !resourceFile.isDirectory) {
-                            templates.add(resourceFile.name.removeSuffix(SCRIPT_DEFINITION_MARKERS_EXTENSION_WITH_DOT))
-                        }
-                    }
-
-
-                    // assuming that all libraries are placed into classes roots
-                    // TODO: extract exact library dependencies instead of putting all module dependencies into classpath
-                    // minimizing the classpath needed to use the template by taking cp only from modules with new templates found
-                    // on the other hand the approach may fail if some module contains a template without proper classpath, while
-                    // the other has properly configured classpath, so assuming that the dependencies are set correctly everywhere
-                    orderEntriesForFile.forEach {
-                        classpath.addAll(
-                            OrderEnumerator.orderEntries(it.ownerModule).withoutSdk().classesRoots.mapNotNull {
-                                it.canonicalPath?.removeSuffix("!/").let(::File)
-                            }
-                        )
-                    }
-                }
+            .onSuccess { files ->
+                val (templateNames, classpathFiles) = getTemplateClassPath(files)
+                templates.addAll(templateNames)
+                classpath.addAll(classpathFiles)
             }
             .onProcessed {
                 if (templates.isEmpty()) return@onProcessed onEarlyEnd()
@@ -217,5 +189,54 @@ class ScriptTemplatesFromDependenciesProvider(private val project: Project) : Sc
         inProgressLock.withLock {
             inProgress = false
         }
+    }
+
+    // public for tests
+    fun getTemplateClassPath(files: List<VirtualFile>): Pair<Collection<String>, Collection<File>> {
+        val pairs: MutableMap<VirtualFile, MutableList<VirtualFile>> = hashMapOf()
+        for (file in files) {
+            val dir = file.parent?.parent?.parent?.parent?.parent ?: continue
+            pairs.getOrPut(dir) { arrayListOf() }.add(file)
+        }
+
+        val templates = LinkedHashSet<String>()
+        val classpath = LinkedHashSet<File>()
+
+        pairs.forEach { (dir, templateFiles) ->
+            if (logger.isDebugEnabled) {
+                logger.debug("root matching SCRIPT_DEFINITION_MARKERS_PATH found: ${dir.path}")
+            }
+
+            val orderEntriesForFile = ProjectFileIndex.getInstance(project).getOrderEntriesForFile(dir)
+                .filter {
+                    if (it is ModuleSourceOrderEntry) {
+                        if (!ModuleRootManager.getInstance(it.ownerModule).fileIndex.isInTestSourceContent(dir)) {
+                            it.getFiles(OrderRootType.SOURCES).contains(dir)
+                        } else {
+                            false
+                        }
+                    } else {
+                        it is LibraryOrSdkOrderEntry && it.getFiles(OrderRootType.CLASSES).contains(dir)
+                    }
+                }
+                .takeIf { it.isNotEmpty() } ?: return@forEach
+
+            templateFiles.forEach {
+                templates.add(it.name.removeSuffix(SCRIPT_DEFINITION_MARKERS_EXTENSION_WITH_DOT))
+            }
+
+            // assuming that all libraries are placed into classes roots
+            // TODO: extract exact library dependencies instead of putting all module dependencies into classpath
+            // minimizing the classpath needed to use the template by taking cp only from modules with new templates found
+            // on the other hand the approach may fail if some module contains a template without proper classpath, while
+            // the other has properly configured classpath, so assuming that the dependencies are set correctly everywhere
+            orderEntriesForFile.flatMap {
+                OrderEnumerator.orderEntries(it.ownerModule).withoutSdk().classesRoots.mapNotNull {
+                    classpath.add(it.canonicalPath?.removeSuffix("!/").let(::File))
+                }
+            }
+        }
+
+        return templates to classpath
     }
 }
