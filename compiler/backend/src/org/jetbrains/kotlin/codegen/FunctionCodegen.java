@@ -1432,7 +1432,7 @@ public class FunctionCodegen {
                 value = StackValue.arrayElement(OBJECT_TYPE, null, StackValue.local(1, argTypes[0]), StackValue.constant(i));
             }
             else {
-                value = StackValue.local(reg, argTypes[i], kotlinType);
+                value = StackValue.local(reg, argTypes[i], InlineClassesUtilsKt.isInlineClassType(kotlinType) ? kotlinType : null);
                 //noinspection AssignmentToForLoopParameter
                 reg += argTypes[i].getSize();
             }

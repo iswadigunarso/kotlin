@@ -553,13 +553,14 @@ public abstract class StackValue {
             boolean allowImplicitCast
     ) {
         if (coerceInlineClasses(fromType, fromKotlinType, toType, toKotlinType, v)) return;
-        if (/*allowImplicitCast &&*/
+        if (allowImplicitCast &&
             fromKotlinType != null &&
             toKotlinType != null &&
             fromType.getSort() == Type.OBJECT &&
             toType.getSort() == Type.OBJECT &&
             //workaround cause of hack in PropertyReferenceGenerationStrategy: value.put(OBJECT_TYPE, targetKotlinType, v)
-            !fromType.equals(OBJECT_TYPE)) {
+            !fromType.equals(OBJECT_TYPE) &&
+            !KotlinBuiltIns.isNothingOrNullableNothing(fromKotlinType)) {
             //use implicit cast
             if (KotlinTypeChecker.DEFAULT.isSubtypeOf(fromKotlinType, toKotlinType)) return;
         }

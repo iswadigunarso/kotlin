@@ -148,7 +148,7 @@ abstract class SwitchCodegen(
             StackValue.local(subjectLocal, subjectType, subjectKotlinType).put(subjectType, subjectKotlinType, codegen.v)
             subjectVariableDescriptor = mySubjectVariable
         } else {
-            codegen.gen(subjectExpression, subjectType, subjectKotlinType)
+            codegen.gen(subjectExpression, subjectType, null)
             subjectVariableDescriptor = null
         }
     }
