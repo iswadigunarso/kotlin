@@ -42,6 +42,7 @@ import org.jetbrains.kotlin.resolve.scopes.receivers.ReceiverValue;
 import org.jetbrains.kotlin.types.KotlinType;
 import org.jetbrains.kotlin.types.SimpleType;
 import org.jetbrains.kotlin.types.TypeUtils;
+import org.jetbrains.kotlin.types.checker.KotlinTypeChecker;
 import org.jetbrains.org.objectweb.asm.Label;
 import org.jetbrains.org.objectweb.asm.Opcodes;
 import org.jetbrains.org.objectweb.asm.Type;
@@ -525,8 +526,13 @@ public abstract class StackValue {
         coerce(this.type, this.kotlinType, toType, toKotlinType, v);
     }
 
-    protected void coerceFrom(@NotNull Type topOfStackType, @Nullable KotlinType topOfStackKotlinType, @NotNull InstructionAdapter v) {
-        coerce(topOfStackType, topOfStackKotlinType, this.type, this.kotlinType, v);
+    protected void coerceFrom(
+            @NotNull Type topOfStackType,
+            @Nullable KotlinType topOfStackKotlinType,
+            @NotNull InstructionAdapter v,
+            boolean allowImplicitCast
+    ) {
+        coerce(topOfStackType, topOfStackKotlinType, this.type, this.kotlinType, v, allowImplicitCast);
     }
 
     public static void coerce(
@@ -536,7 +542,27 @@ public abstract class StackValue {
             @Nullable KotlinType toKotlinType,
             @NotNull InstructionAdapter v
     ) {
+        coerce(fromType, fromKotlinType, toType, toKotlinType, v, false);
+    }
+    public static void coerce(
+            @NotNull Type fromType,
+            @Nullable KotlinType fromKotlinType,
+            @NotNull Type toType,
+            @Nullable KotlinType toKotlinType,
+            @NotNull InstructionAdapter v,
+            boolean allowImplicitCast
+    ) {
         if (coerceInlineClasses(fromType, fromKotlinType, toType, toKotlinType, v)) return;
+        if (/*allowImplicitCast &&*/
+            fromKotlinType != null &&
+            toKotlinType != null &&
+            fromType.getSort() == Type.OBJECT &&
+            toType.getSort() == Type.OBJECT &&
+            //workaround cause of hack in PropertyReferenceGenerationStrategy: value.put(OBJECT_TYPE, targetKotlinType, v)
+            !fromType.equals(OBJECT_TYPE)) {
+            //use implicit cast
+            if (KotlinTypeChecker.DEFAULT.isSubtypeOf(fromKotlinType, toKotlinType)) return;
+        }
         coerce(fromType, toType, v);
     }
 
@@ -1024,7 +1050,7 @@ public abstract class StackValue {
 
         @Override
         public void storeSelector(@NotNull Type topOfStackType, @Nullable KotlinType topOfStackKotlinType, @NotNull InstructionAdapter v) {
-            coerceFrom(topOfStackType, topOfStackKotlinType, v);
+            coerceFrom(topOfStackType, topOfStackKotlinType, v, true);
             v.store(index, this.type);
         }
     }
@@ -1057,7 +1083,7 @@ public abstract class StackValue {
 
         @Override
         public void storeSelector(@NotNull Type topOfStackType, @Nullable KotlinType topOfStackKotlinType, @NotNull InstructionAdapter v) {
-            coerceFrom(topOfStackType, topOfStackKotlinType, v);
+            coerceFrom(topOfStackType, topOfStackKotlinType, v, true);
             v.store(index, this.type);
             PseudoInsnsKt.storeNotNull(v);
         }
@@ -1235,7 +1261,7 @@ public abstract class StackValue {
 
         @Override
         public void storeSelector(@NotNull Type topOfStackType, @Nullable KotlinType topOfStackKotlinType, @NotNull InstructionAdapter v) {
-            coerceFrom(topOfStackType, topOfStackKotlinType, v);
+            coerceFrom(topOfStackType, topOfStackKotlinType, v, true);
             v.astore(this.type);
         }
 
@@ -1629,7 +1655,7 @@ public abstract class StackValue {
 
         @Override
         public void storeSelector(@NotNull Type topOfStackType, @Nullable KotlinType topOfStackKotlinType, @NotNull InstructionAdapter v) {
-            coerceFrom(topOfStackType, topOfStackKotlinType, v);
+            coerceFrom(topOfStackType, topOfStackKotlinType, v, true);
             v.visitFieldInsn(isStaticStore ? PUTSTATIC : PUTFIELD, owner.getInternalName(), name, this.type.getDescriptor());
         }
 
@@ -1830,7 +1856,7 @@ public abstract class StackValue {
         @Override
         public void storeSelector(@NotNull Type topOfStackType, @Nullable KotlinType topOfStackKotlinType, @NotNull InstructionAdapter v) {
             if (setter == null) {
-                coerceFrom(topOfStackType, topOfStackKotlinType, v);
+                coerceFrom(topOfStackType, topOfStackKotlinType, v, true);
                 assert fieldName != null : "Property should have either a setter or a field name: " + descriptor;
                 assert backingFieldOwner != null : "Property should have either a setter or a backingFieldOwner: " + descriptor;
                 v.visitFieldInsn(isStaticStore ? PUTSTATIC : PUTFIELD, backingFieldOwner.getInternalName(), fieldName, this.type.getDescriptor());
@@ -1931,13 +1957,13 @@ public abstract class StackValue {
             if (isLateinit) {
                 StackValue.genNonNullAssertForLateinit(v, name.asString());
             }
-            coerceFrom(refType, null, v);
+            coerceFrom(refType, null, v, true);
             coerceTo(type, kotlinType, v);
         }
 
         @Override
         public void storeSelector(@NotNull Type topOfStackType, @Nullable KotlinType topOfStackKotlinType, @NotNull InstructionAdapter v) {
-            coerceFrom(topOfStackType, topOfStackKotlinType, v);
+            coerceFrom(topOfStackType, topOfStackKotlinType, v, true);
             Type refType = refType(this.type);
             Type sharedType = sharedTypeForType(this.type);
             v.visitFieldInsn(PUTFIELD, sharedType.getInternalName(), "element", refType.getDescriptor());
@@ -1996,13 +2022,13 @@ public abstract class StackValue {
             if (isLateinit) {
                 StackValue.genNonNullAssertForLateinit(v, variableName.asString());
             }
-            coerceFrom(refType, null, v);
+            coerceFrom(refType, null, v, true);
             coerceTo(type, kotlinType, v);
         }
 
         @Override
         public void storeSelector(@NotNull Type topOfStackType, @Nullable KotlinType topOfStackKotlinType, @NotNull InstructionAdapter v) {
-            coerceFrom(topOfStackType, topOfStackKotlinType, v);
+            coerceFrom(topOfStackType, topOfStackKotlinType, v, true);
             v.visitFieldInsn(PUTFIELD, sharedTypeForType(type).getInternalName(), "element", refType(type).getDescriptor());
         }
 
