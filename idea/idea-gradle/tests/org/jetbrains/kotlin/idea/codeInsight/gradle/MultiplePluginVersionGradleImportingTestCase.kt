@@ -80,6 +80,7 @@ abstract class MultiplePluginVersionGradleImportingTestCase : GradleImportingTes
         return """
             google()
             jcenter()
+            mavenLocal()
             $customMavenRepositories
         """.trimIndent()
     }
