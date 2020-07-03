@@ -49,6 +49,7 @@ class FullPipelineModularizedTest : AbstractModularizedTest() {
         args.useFir = true
         args.classpath = moduleData.classpath.joinToString(separator = ":") { it.absolutePath }
         args.javaSourceRoots = moduleData.javaSourceRoots.map { it.absolutePath }.toTypedArray()
+        args.allowKotlinPackage = true
         args.freeArgs = moduleData.sources.map { it.absolutePath }
         val tmp = Files.createTempDirectory("compile-output")
         args.destination = tmp.toAbsolutePath().toFile().toString()
