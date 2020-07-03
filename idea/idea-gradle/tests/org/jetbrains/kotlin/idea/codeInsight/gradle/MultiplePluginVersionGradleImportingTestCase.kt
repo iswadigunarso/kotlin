@@ -77,19 +77,10 @@ abstract class MultiplePluginVersionGradleImportingTestCase : GradleImportingTes
         val customMavenRepositories = customRepositories.map { if (useKts) "maven(\"$it\")" else "maven { url '$it' } " }.joinToString("\n")
         val baseFolder = File(".").absolutePath.replace("\\", "/")
         val quote = if (useKts) '"' else '\''
-        val flatDirRepositories = if (useMaster)
-            flatDirs.map { "$quote$baseFolder/$it$quote" }.joinToString(
-                ",\n",
-                if (useKts) "flatDir { dirs(" else "flatDir { dirs ",
-                if (useKts) ")}" else "}"
-            )
-        else
-            ""
         return """
             google()
             jcenter()
             $customMavenRepositories
-            $flatDirRepositories
         """.trimIndent()
     }
 
